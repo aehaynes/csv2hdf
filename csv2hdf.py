@@ -1,56 +1,126 @@
 import os
-from numpy import array
+from numpy import array, dtype, arange
 from h5py import File as H5File
 import time
 
-def csvTohdf(csv_path, container_names= None, size=2**16, delimiter='\n', overwrite=False, dt='f'):
-	''' Converts large .csv files to and Hdf data store of numpy arrays.
-		- useful for low RAM environments, where converting large csv's in pandas may be impractical.
-		Note: pandas and hdf are compatible, but cumbersome.'''
 
-	start_time = time.time()
+def constr_dtype(names, sample):
+	dtyp = []
+	dim = 1
 
-	if container_names == None:
-		container_names = {'file':'file1','group':'group1','dataset':'dataset1'}
+	for (n,s) in zip(names, sample):
+		''' Specify any custom rules for dtypes here e.g.
+
+		#if name == VariableName:
+		#	dt = dtype( VariableType )
+		#elif VariableNamePattern in name:
+		#	dt = dtype(VariableType )
+		#else:
+			#dt = dtype('float32') 
+
+		Take care to mind the type, e.g. for arithmetic 
+		operations division of integers where a float32
+		is expected as the result. '''
+		try:
+			float(s)
+			dtyp.append( (n, dtype('float'), dim) )
+			#int(s)
+			#dtyp.append( (n, dtype('int'), dim) )
+		except:
+			dtyp.append( (n, dtype('S16'), dim) )
+			#try:
+			#	float(s)
+			#	dtyp.append( (n, dtype('float'), dim) )
+			#except:
+				
+	return dtype( dtyp )
+
+
+def csvToHDF(CSVPath, ContainerNames= None, Size=2**16, Delimiter='\n', Overwrite=False, Header=False):
+	''' Converts large .csv files to and HDF data store of numpy arrays. 
+		Useful for low RAM environments, where converting 
+		large csv's in pandas is impractical. 
 		
-	csv_buffer = ''
-	out = []
-	num_rows = 0
-	
-	''' create HDF; Check for existing datasets with the 
-	same name and overwrite them if overwrite is True '''
+		Note: Pandas and HDF are compatible, but cumbersome.'''
 
-	hdf = H5File(container_names['file'])	
-	if container_names['group'] in hdf.keys():
-		if container_names['dataset'] in hdf[ container_names['group'] ].keys():
-			print("Dataset [%s] found in Group [%s]..." % (container_names['dataset'], container_names['group']) )
-			if overwrite:
-				print("Overwriting Dataset [%s] ..." % (container_names['dataset']) )
-				del hdf[ container_names['group'] ][ container_names['dataset'] ]
+	StartTime = time.time()
+
+	#Get Headers with variable name and set dtype for each variable
+	with open(CSVPath) as f:
+		Sample = array( f.readline().split(',') )
+		NCols = len( Sample )
+		N = range(NCols)
+		_Vars = array( [ 'var%s'%i for i in N ] )
+
+		if Header == True:
+			#strip var names of double quotes and newlines
+			Headers = array( [s.replace('"','').replace('\n', '') for s in Sample] ) 
+			# Fix for empty string variable names
+			Mask = (Headers != '')
+			Vars = []
+			for i in range(len(Mask)):
+				#User variables from Headers if the name is non empty
+				if Mask[i]:
+					Vars.append( Headers[i] )
+				#Otherwise use names in Vars
+				else:
+					Vars.append( _Vars[i] )
+			# Get next line as a sample to determine dtype in next step
+			Sample = array( f.readline().split(',') )
+		else:
+			Vars = _Vars
+
+		#Types = [ dtype( type(v) ) for v in Headers ]
+	dt = constr_dtype(Vars, Sample)
+
+	if ContainerNames == None:
+		ContainerNames = ['file1','group1','dataset1']
+
+	''' Create HDF; Check for existing datasets with the 
+		same name and Overwrite them if Overwrite is True '''
+
+	CSVBuffer = ''
+	Out = []
+	NumRows = 0
+	HDF = H5File( ContainerNames[0] )
+	Groups = HDF.keys()
+	if ContainerNames[1] in Groups:
+		Datasets = HDF[ ContainerNames[1] ].keys()
+		if ContainerNames[2] in Datasets:
+			print("Dataset [%s] found in Group [%s]..." % 
+					(ContainerNames[2], ContainerNames[1]) )
+			if Overwrite:
+				print("Overwriting Dataset [%s] ..." % (ContainerNames[2]) )
+				del HDF[ ContainerNames[1] ][ ContainerNames[2] ]
 			else:
 				print("Exiting without processing csv.")
 				return
 	else:
-		hdf.create_group(container_names['group'])
-	grp = hdf[ container_names['group'] ]
-	dataset = grp.create_dataset(container_names['dataset'], (num_rows, 1), maxshape = (None,None) )
+		HDF.create_group( ContainerNames[1] )
+	Grp = HDF[ ContainerNames[1] ]
+	dataset = Grp.create_dataset( ContainerNames[2], (NumRows, ), dt, maxshape = (None,) )
 
 	# Process csv to numpy arrays and store in csv
-	with open(csv_path) as f:
-		f.seek(0)		
-		block = csv_buffer + f.read(size)
-		while block:
-			lines = block.split(delimiter)
-			if block[-1] == delimiter:
-				csv_buffer = ''
-				del lines[-1]
+	with open(CSVPath) as f:
+		f.seek(0)
+		if Header == True:
+			f.readline()
+		Block = CSVBuffer + f.read(Size)
+		while Block:
+			Lines = Block.split(Delimiter)
+			if Block[-1] == Delimiter:
+				CSVBuffer = ''
+				del Lines[-1]
 			else:
-				csv_buffer = lines.pop()
-			out = [ tuple( l.split(',') ) for l in lines]
-			num_rows = num_rows + len(out)
-			c_row = dataset.shape[0]
-			array_out = array(out, dtype=dt)
-			dataset.resize((num_rows, array_out.shape[1]))
-			dataset[c_row:num_rows] = array_out
-			block = csv_buffer + f.read(size)
-	return time.time() - start_time
+				CSVBuffer = Lines.pop()
+			Out 	= [ tuple( l.split(',') ) for l in Lines]
+			NumRows = NumRows + len(Out)
+			RCount	= dataset.shape[0]
+			dataset.resize((NumRows, ))
+			ArrOut = array(Out, dtype=dt)
+			dataset[RCount:NumRows] = ArrOut
+			Block 	= CSVBuffer + f.read(Size)
+	return time.time() - StartTime
+
+
+
